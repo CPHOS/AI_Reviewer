@@ -1,0 +1,25 @@
+[project]
+name = "ai-reviewer"
+version = "0.1.0"
+description = "CPHOS 题目 AI 审核工作流"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+ai-reviewer = "src.app.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
