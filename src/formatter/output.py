@@ -70,7 +70,7 @@ def _render_node_md(nr: NodeReview, depth: int = 3) -> str:
                     f"({pr.point.kind.value}, {pr.point.score}分)"
                     f" — ⛔ 解析失败\n"
                 )
-                parts.append(f"- **状态**: LLM 回复无法解析为有效 JSON\n")
+                parts.append(f"- **状态**: LLM 回复无法解析为有效格式\n")
                 parts.append(f"- **原始输出**:\n")
                 parts.append(f"<details>\n<summary>点击展开 LLM 原始回复</summary>\n\n```\n{pr.raw_response}\n```\n\n</details>\n")
             else:

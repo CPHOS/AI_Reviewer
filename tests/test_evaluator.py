@@ -133,6 +133,28 @@ class TestComprehensiveEval:
         assert result.thinking_difficulty == 5
         assert result.overall_difficulty == 5
         assert result.summary == ""
+        # 默认 max_parse_retries=2，共 3 次请求
+        assert mock_client.chat.call_count == 3
+
+    def test_retry_then_succeed(
+        self, sample_problem, sample_review_result, mock_client
+    ):
+        good_content = (
+            "<computation_difficulty>6</computation_difficulty>\n"
+            "<thinking_difficulty>7</thinking_difficulty>\n"
+            "<overall_difficulty>7</overall_difficulty>\n"
+            "<summary>重试后成功</summary>"
+        )
+        mock_client.chat.side_effect = [
+            ChatResponse(content="无效内容"),
+            ChatResponse(content=good_content),
+        ]
+        result = comprehensive_eval(
+            sample_problem, sample_review_result, mock_client
+        )
+        assert result.computation_difficulty == 6
+        assert result.summary == "重试后成功"
+        assert mock_client.chat.call_count == 2
 
     def test_partial_tags(
         self, sample_problem, sample_review_result, mock_client

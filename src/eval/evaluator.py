@@ -70,8 +70,9 @@ def comprehensive_eval(
     problem: Problem,
     review: ReviewResult,
     client: OpenRouterClient,
+    max_parse_retries: int = 2,
 ) -> EvalResult:
-    """汇总评估。"""
+    """汇总评估。解析失败时最多重试 max_parse_retries 次。"""
     logger.info("开始汇总评估: %s", problem.title)
 
     node_summaries = _collect_node_summaries(review.node_reviews)
@@ -88,8 +89,23 @@ def comprehensive_eval(
         difficulty_stats=difficulty_stats,
     )
 
-    resp = client.chat(messages)
-    text = resp.content
+    text = ""
+    for attempt in range(1 + max_parse_retries):
+        resp = client.chat(messages)
+        text = resp.content
+        # 至少需要一个标签被成功提取才算解析成功
+        if _extract_tag_content(text, "summary") or _extract_tag_content(text, "computation_difficulty"):
+            break
+        if attempt < max_parse_retries:
+            logger.warning(
+                "汇总评估 LLM 回复中未找到有效标签（第 %d/%d 次尝试），重试…",
+                attempt + 1, 1 + max_parse_retries,
+            )
+        else:
+            logger.warning(
+                "汇总评估 LLM 回复解析失败，已达最大重试次数 (%d 次)，使用默认值",
+                1 + max_parse_retries,
+            )
 
     def _safe_int(tag_name: str, default: int = 5) -> int:
         val = _extract_tag_content(text, tag_name)

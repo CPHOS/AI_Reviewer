@@ -100,8 +100,12 @@ def review_method(
     sub_statement: str,
     client: OpenRouterClient,
     prior_reviews: str = "",
+    max_parse_retries: int = 2,
 ) -> list[PointReview]:
-    """批量审核一种解法下的所有评分点（单次 LLM 请求）。"""
+    """批量审核一种解法下的所有评分点（单次 LLM 请求）。
+
+    解析失败时最多重试 max_parse_retries 次。
+    """
     points = method.scoring_points
     if not points:
         return []
@@ -119,20 +123,33 @@ def review_method(
         points_count=str(len(points)),
         prior_reviews=prior_reviews,
     )
-    resp = client.chat(messages)
 
-    raw_content = resp.content
-
-    # 解析 <review> 标签块
+    # 尝试请求并解析，解析失败时重试
+    raw_content = ""
+    data_list: list[dict[str, str]] = []
     parse_failed = False
-    data_list = _parse_review_blocks(raw_content)
-    if not data_list:
-        logger.warning(
-            "解法 %d 的 LLM 回复中未找到 <review> 标签，标记为解析失败。\n原始回复前 500 字符: %s",
-            method.index,
-            raw_content[:500],
-        )
+    for attempt in range(1 + max_parse_retries):
+        resp = client.chat(messages)
+        raw_content = resp.content
+        data_list = _parse_review_blocks(raw_content)
+        if data_list:
+            parse_failed = False
+            break
         parse_failed = True
+        if attempt < max_parse_retries:
+            logger.warning(
+                "解法 %d 的 LLM 回复中未找到 <review> 标签（第 %d/%d 次尝试），重试…\n"
+                "原始回复前 500 字符: %s",
+                method.index, attempt + 1, 1 + max_parse_retries,
+                raw_content[:500],
+            )
+        else:
+            logger.warning(
+                "解法 %d 的 LLM 回复解析失败，已达最大重试次数 (%d 次)，标记为解析失败。\n"
+                "原始回复前 500 字符: %s",
+                method.index, 1 + max_parse_retries,
+                raw_content[:500],
+            )
 
     # 将结果按 tag 映射回评分点
     data_by_tag: dict[str, dict] = {}
@@ -184,6 +201,7 @@ def review_method(
             reasonableness_comment=data.get("reasonableness_comment", ""),
             computation_difficulty=comp_diff,
             thinking_difficulty=think_diff,
+            raw_response=raw_content,
         )
         pr.method_index = method.index
         reviews.append(pr)

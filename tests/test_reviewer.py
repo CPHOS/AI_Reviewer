@@ -293,6 +293,8 @@ class TestReviewMethod:
         assert results[0].correctness == Correctness.CORRECT
         assert results[1].correctness == Correctness.WRONG
         assert results[1].computation_difficulty == 7
+        # raw_response 始终保存
+        assert all(r.raw_response != "" for r in results)
 
     def test_single_point_fallback(self, mock_client):
         """单评分点，按顺序匹配。"""
@@ -316,13 +318,13 @@ class TestReviewMethod:
         mock_client.chat.call_count == 1
 
     def test_no_tags_marks_parse_failed(self, mock_client):
-        """LLM 返回无标签文本时，标记 parse_failed 并保存原始输出。"""
+        """LLM 返回无标签文本时，重试后标记 parse_failed 并保存原始输出。"""
         pts = [
             ScoringPoint(tag="A", score=2, kind=ScoringPointKind.EQUATION, content="x"),
             ScoringPoint(tag="B", score=3, kind=ScoringPointKind.TEXT, content="y"),
         ]
         method = SolutionMethod(index=0, scoring_points=pts, raw_tex="...")
-        raw_text = "这是一段无法解析为JSON的自然语言回复，模型没有按要求输出格式。"
+        raw_text = "这是一段无法解析的自然语言回复，模型没有按要求输出格式。"
         mock_client.chat.return_value = ChatResponse(content=raw_text)
         results = review_method(method, "ctx", "stmt", "sub", mock_client)
         assert len(results) == 2
@@ -330,6 +332,24 @@ class TestReviewMethod:
         assert all(r.raw_response == raw_text for r in results)
         assert all(r.correctness is None for r in results)
         assert all(r.computation_difficulty == 0 for r in results)
+        # 默认 max_parse_retries=2，共 3 次请求
+        assert mock_client.chat.call_count == 3
+
+    def test_retry_then_succeed(self, mock_client):
+        """首次解析失败、重试后成功，不标记 parse_failed。"""
+        pts = [ScoringPoint(tag="A", score=2, kind=ScoringPointKind.EQUATION, content="x")]
+        method = SolutionMethod(index=0, scoring_points=pts, raw_tex="...")
+        good_content = _tag_response("A", comp=5, think=6)
+        mock_client.chat.side_effect = [
+            ChatResponse(content="无法解析的内容"),
+            ChatResponse(content=good_content),
+        ]
+        results = review_method(method, "ctx", "stmt", "sub", mock_client)
+        assert len(results) == 1
+        assert not results[0].parse_failed
+        assert results[0].computation_difficulty == 5
+        assert results[0].raw_response == good_content
+        assert mock_client.chat.call_count == 2
 
     def test_empty_method(self, mock_client):
         method = SolutionMethod(index=0, scoring_points=[], raw_tex="...")
