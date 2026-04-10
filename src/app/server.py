@@ -431,10 +431,16 @@ class ReviewServer:
     # 主入口
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """启动服务器。"""
+    def run(self, *, auto_on: bool = False) -> None:
+        """启动服务器。
+
+        Args:
+            auto_on: 为 True 时连接成功后立即开启自动轮询。
+        """
         try:
             self._connect()
+            if auto_on:
+                self._start_auto()
             self._cmd_loop()
         except KeyboardInterrupt:
             print("\n收到中断信号")

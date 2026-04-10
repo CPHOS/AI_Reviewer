@@ -56,6 +56,7 @@ ai-reviewer local problem.tex -o reports/
 
 ```bash
 ai-reviewer server
+ai-reviewer server --auto-on # 连接成功后立即开启自动轮询模式
 ```
 
 登录成功后可使用以下命令：

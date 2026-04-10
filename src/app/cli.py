@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output-dir", default=None,
         help="报告输出目录（覆盖 .env 中的 OUTPUT_DIR）",
     )
+    server_p.add_argument(
+        "--auto-on", action="store_true", default=False,
+        help="启动后立即开启自动轮询模式",
+    )
 
     return parser
 
@@ -194,7 +198,7 @@ def _main_server(args: argparse.Namespace) -> None:
                 config.llm.model, config.qb.url, config.output_dir)
 
     server = ReviewServer()
-    server.run()
+    server.run(auto_on=args.auto_on)
 
 
 # ---------------------------------------------------------------------------
