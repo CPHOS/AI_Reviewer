@@ -20,6 +20,19 @@ class LLMConfig:
     """单个 Key 最大重试次数。"""
     retry_interval: float = 2.0
     """重试间隔（秒）。"""
+    batch_min_points: int = 0
+    """相邻小问合并审核的最小评分点阈值。0 表示不合并。"""
+
+
+@dataclass
+class QBConfig:
+    """题库服务器配置（server 模式）。"""
+
+    url: str = ""
+    username: str = ""
+    password: str = ""
+    poll_interval: int = 600
+    """自动模式轮询间隔（秒），默认 600。"""
 
 
 @dataclass
@@ -27,6 +40,7 @@ class AppConfig:
     """应用全局配置。"""
 
     llm: LLMConfig = field(default_factory=LLMConfig)
+    qb: QBConfig = field(default_factory=QBConfig)
     output_dir: str = "output"
     """报告输出目录。"""
 

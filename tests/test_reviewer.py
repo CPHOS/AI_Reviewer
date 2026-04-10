@@ -24,7 +24,9 @@ from src.review.reviewer import (
     _extract_tag_content,
     _format_points_list,
     _format_prior_reviews,
+    _group_leaf_batches,
     _parse_review_blocks,
+    _review_leaf_batch,
     review_method,
     summarize_node,
     review_node,
@@ -455,3 +457,189 @@ class TestDetailedReview:
         assert isinstance(result, ReviewResult)
         assert result.problem is sample_problem
         assert len(result.node_reviews) == 1
+
+
+# ---------------------------------------------------------------------------
+# _group_leaf_batches
+# ---------------------------------------------------------------------------
+
+
+class TestGroupLeafBatches:
+    def _leaf(self, number: str, n_points: int) -> QuestionNode:
+        """创建一个带 n_points 个评分点的叶节点。"""
+        pts = [
+            ScoringPoint(tag=f"{number}-SP{i}", score=1,
+                         kind=ScoringPointKind.EQUATION, content="x")
+            for i in range(n_points)
+        ]
+        return QuestionNode(
+            level=QuestionLevel.SUBQ, number=number, score=n_points,
+            methods=[SolutionMethod(index=0, scoring_points=pts)],
+        )
+
+    def _parent(self, number: str) -> QuestionNode:
+        """创建一个非叶节点（有子节点）。"""
+        child = self._leaf(f"{number}.1", 1)
+        return QuestionNode(
+            level=QuestionLevel.SUBQ, number=number, score=5,
+            children=[child],
+        )
+
+    def test_disabled_when_zero(self):
+        children = [self._leaf("1", 1), self._leaf("2", 1)]
+        groups = _group_leaf_batches(children, 0)
+        assert len(groups) == 2
+        assert all(len(g) == 1 for g in groups)
+
+    def test_single_batch(self):
+        children = [self._leaf("1", 1), self._leaf("2", 1), self._leaf("3", 1)]
+        groups = _group_leaf_batches(children, 4)
+        # 总共 3 个评分点 < 4，全部归入一组
+        assert len(groups) == 1
+        assert len(groups[0]) == 3
+
+    def test_splits_at_threshold(self):
+        children = [self._leaf("1", 2), self._leaf("2", 2), self._leaf("3", 2)]
+        groups = _group_leaf_batches(children, 4)
+        # (1)+(2) = 4 ≥ 4 → 切分; (3) = 2 → 残余组
+        assert len(groups) == 2
+        assert len(groups[0]) == 2
+        assert len(groups[1]) == 1
+
+    def test_non_leaf_breaks_batch(self):
+        children = [self._leaf("1", 1), self._parent("2"), self._leaf("3", 1)]
+        groups = _group_leaf_batches(children, 4)
+        # (1) 叶 → 被非叶 (2) 切断 → 独立组; (2) 非叶独立; (3) 叶独立
+        assert len(groups) == 3
+        assert len(groups[0]) == 1  # leaf (1)
+        assert len(groups[1]) == 1  # parent (2)
+        assert len(groups[2]) == 1  # leaf (3)
+
+    def test_large_leaf_alone(self):
+        children = [self._leaf("1", 8)]
+        groups = _group_leaf_batches(children, 4)
+        # 单个大叶节点 ≥ 阈值，独立成组
+        assert len(groups) == 1
+        assert len(groups[0]) == 1
+
+
+# ---------------------------------------------------------------------------
+# _review_leaf_batch
+# ---------------------------------------------------------------------------
+
+
+class TestReviewLeafBatch:
+    def test_batch_reviews_multiple_nodes(self, mock_client):
+        """两个叶节点合并为一次 LLM 审核调用，小结仍各自生成。"""
+        pt1 = ScoringPoint(tag="A", score=2, kind=ScoringPointKind.EQUATION, content="x")
+        pt2 = ScoringPoint(tag="B", score=3, kind=ScoringPointKind.TEXT, content="y")
+        node1 = QuestionNode(
+            level=QuestionLevel.SUBQ, number="(1)", score=2,
+            methods=[SolutionMethod(index=0, scoring_points=[pt1])],
+            solution_tex="sol1",
+        )
+        node2 = QuestionNode(
+            level=QuestionLevel.SUBQ, number="(2)", score=3,
+            methods=[SolutionMethod(index=0, scoring_points=[pt2])],
+            solution_tex="sol2",
+        )
+        mock_client.chat.side_effect = [
+            # 合并审核 LLM 调用
+            ChatResponse(content=_tag_response("A") + "\n" + _tag_response("B", correctness="wrong")),
+            # node1 小结
+            ChatResponse(content="小结1"),
+            # node2 小结
+            ChatResponse(content="小结2"),
+        ]
+        results = _review_leaf_batch([node1, node2], "ctx", "stmt", mock_client)
+        assert len(results) == 2
+        assert results[0].node is node1
+        assert results[1].node is node2
+        assert len(results[0].point_reviews) == 1
+        assert len(results[1].point_reviews) == 1
+        assert results[0].point_reviews[0].correctness == Correctness.CORRECT
+        assert results[1].point_reviews[0].correctness == Correctness.WRONG
+        assert results[0].summary == "小结1"
+        assert results[1].summary == "小结2"
+        # 1 次审核 + 2 次小结 = 3 次 LLM 调用
+        assert mock_client.chat.call_count == 3
+
+    def test_empty_points_returns_empty_reviews(self, mock_client):
+        """无评分点的节点直接返回空 NodeReview。"""
+        node = QuestionNode(
+            level=QuestionLevel.SUBQ, number="(1)", score=0,
+            methods=[SolutionMethod(index=0, scoring_points=[])],
+        )
+        results = _review_leaf_batch([node], "ctx", "stmt", mock_client)
+        assert len(results) == 1
+        assert results[0].point_reviews == []
+        mock_client.chat.assert_not_called()
+
+    def test_parse_failure_marks_all(self, mock_client):
+        """合并审核解析失败时，所有评分点标记 parse_failed。"""
+        pt1 = ScoringPoint(tag="A", score=1, kind=ScoringPointKind.EQUATION, content="x")
+        pt2 = ScoringPoint(tag="B", score=1, kind=ScoringPointKind.EQUATION, content="y")
+        node1 = QuestionNode(
+            level=QuestionLevel.SUBQ, number="(1)", score=1,
+            methods=[SolutionMethod(index=0, scoring_points=[pt1])],
+        )
+        node2 = QuestionNode(
+            level=QuestionLevel.SUBQ, number="(2)", score=1,
+            methods=[SolutionMethod(index=0, scoring_points=[pt2])],
+        )
+        mock_client.chat.return_value = ChatResponse(content="无法解析的内容")
+        results = _review_leaf_batch([node1, node2], "ctx", "stmt", mock_client)
+        assert len(results) == 2
+        assert all(pr.parse_failed for nr in results for pr in nr.point_reviews)
+        # 默认 max_parse_retries=2，共 3 次审核请求 + 2 次小结 = 5
+        assert mock_client.chat.call_count == 5
+
+
+# ---------------------------------------------------------------------------
+# review_node with batching
+# ---------------------------------------------------------------------------
+
+
+class TestReviewNodeBatching:
+    def test_batching_reduces_llm_calls(self, mock_client):
+        """batch_min_points > 0 时，相邻叶节点合并为一次审核调用。"""
+        from unittest.mock import patch
+        from src.config import AppConfig, LLMConfig
+
+        pt1 = ScoringPoint(tag="A", score=1, kind=ScoringPointKind.EQUATION, content="x")
+        pt2 = ScoringPoint(tag="B", score=1, kind=ScoringPointKind.EQUATION, content="y")
+        child1 = QuestionNode(
+            level=QuestionLevel.SUBSUBQ, number="1.1", score=1,
+            methods=[SolutionMethod(index=0, scoring_points=[pt1])],
+            solution_tex="sol1",
+        )
+        child2 = QuestionNode(
+            level=QuestionLevel.SUBSUBQ, number="1.2", score=1,
+            methods=[SolutionMethod(index=0, scoring_points=[pt2])],
+            solution_tex="sol2",
+        )
+        parent = QuestionNode(
+            level=QuestionLevel.SUBQ, number="1", score=10,
+            children=[child1, child2],
+        )
+
+        cfg = AppConfig(llm=LLMConfig(batch_min_points=4))
+        mock_client.chat.side_effect = [
+            # 合并审核 (A + B)
+            ChatResponse(content=_tag_response("A") + "\n" + _tag_response("B")),
+            # child1 小结
+            ChatResponse(content="小结1"),
+            # child2 小结
+            ChatResponse(content="小结2"),
+            # parent 小结
+            ChatResponse(content="父小结"),
+        ]
+        with patch("src.review.reviewer.get_config", return_value=cfg):
+            nr = review_node(parent, "ctx", "stmt", mock_client)
+
+        assert len(nr.child_reviews) == 2
+        assert nr.child_reviews[0].summary == "小结1"
+        assert nr.child_reviews[1].summary == "小结2"
+        assert nr.summary == "父小结"
+        # 1 合并审核 + 2 子小结 + 1 父小结 = 4 次调用
+        assert mock_client.chat.call_count == 4

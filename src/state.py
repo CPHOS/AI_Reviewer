@@ -41,10 +41,16 @@ class StateMachine:
     def __init__(self) -> None:
         self._state: State = State.INIT
         self._start_time: float = 0.0
+        self._eval_result = None
 
     @property
     def state(self) -> State:
         return self._state
+
+    @property
+    def eval_result(self):
+        """最近一次审核的汇总评估结果。"""
+        return self._eval_result
 
     def _transition(self, to: State) -> None:
         """执行状态转移并记录日志。"""
@@ -85,6 +91,7 @@ class StateMachine:
             self._transition(State.EVALUATING)
             logger.info("执行汇总评估…")
             eval_result = comprehensive_eval(problem, review_result, client)
+            self._eval_result = eval_result
 
             # ④ 格式化输出
             self._transition(State.FORMATTING)
