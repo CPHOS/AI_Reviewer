@@ -230,13 +230,22 @@ stateDiagram-v2
 1. `status == "none"`（未经人工审核）
 2. `updated_at` 晚于服务启动时间
 3. 本次运行期内尚未审核过（内存缓存去重）
+4. 当前不在 in-flight 审核集合中（避免 auto 重复提交）
+
+### Server 并发策略
+
+- `QB_MAX_CONCURRENT_REVIEWS` 控制 server 模式最多同时维持的审核任务数
+- 手动 `review` 与 auto 轮询共用同一组并发槽位
+- 手动提交在满载时立即返回“队列已满”
+- auto 提交在满载时等待空闲槽位，再继续调度后续新题
 
 ### 审核结果回写
 
-审核完成后调用 `update_question`：
+审核完成后调用 v0.1.0 SDK 专用接口：
 
-- **difficulty**：以 bot 用户名为标签，写入 `{score: overall_difficulty, notes: summary}`
-- **reviewers**：读取现有审题人列表，追加 bot 显示名称（去重）
+- 难度标签存在时：`update_question_difficulty(question_id, bot_username, overall_difficulty, notes=markdown_report)`
+- 难度标签不存在时：`create_question_difficulty(question_id, bot_username, overall_difficulty, notes=markdown_report)`
+- `update_question_status(question_id, "reviewed")`
 
 ## 鲁棒性设计
 

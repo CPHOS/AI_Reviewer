@@ -13,6 +13,7 @@ import os
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,6 +25,26 @@ from src.state import StateMachine
 # ---------------------------------------------------------------------------
 # CLI 参数解析
 # ---------------------------------------------------------------------------
+
+
+def _parse_datetime_arg(value: str) -> datetime:
+    """解析 server 时间参数，统一转换为 UTC。"""
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "时间格式无效，请使用 ISO 8601，例如 2026-04-11T08:00:00+08:00"
+        ) from exc
+
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        dt = dt.replace(tzinfo=local_tz)
+
+    return dt.astimezone(timezone.utc)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     server_p.add_argument(
         "--auto-on", action="store_true", default=False,
         help="启动后立即开启自动轮询模式",
+    )
+    server_p.add_argument(
+        "--auto-updated-after", type=_parse_datetime_arg, default=None,
+        help="auto 模式只检查该时间之后更新的题目（ISO 8601，默认使用服务启动时间）",
     )
 
     return parser
@@ -126,6 +151,10 @@ def _load_qb_config() -> QBConfig:
         username=os.getenv("QB_USERNAME", ""),
         password=os.getenv("QB_PASSWORD", ""),
         poll_interval=int(os.getenv("QB_POLL_INTERVAL", "600")),
+        max_concurrent_reviews=max(
+            1, int(os.getenv("QB_MAX_CONCURRENT_REVIEWS", "1"))
+        ),
+        auto_updated_after=None,
     )
 
 
@@ -190,6 +219,7 @@ def _main_server(args: argparse.Namespace) -> None:
 
     llm = _load_llm_config()
     qb = _load_qb_config()
+    qb.auto_updated_after = args.auto_updated_after
     output_dir = args.output_dir or os.getenv("OUTPUT_DIR", "output")
     config = init_config(llm=llm, qb=qb, output_dir=output_dir)
 

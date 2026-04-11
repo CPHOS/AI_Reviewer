@@ -62,12 +62,113 @@ class ReviewServer:
         self._startup_time: datetime | None = None
         # 已审核的 question_id 集合（运行期内缓存，避免重复审核）
         self._reviewed_ids: set[str] = set()
-        # 审核锁：同一时刻只允许一个审核任务运行
-        self._review_lock = threading.Lock()
+        # 已提交或正在运行的 question_id，避免重复提交。
+        self._inflight_ids: set[str] = set()
+        # server 模式允许的最大并发审核任务数。
+        max_reviews = max(1, get_config().qb.max_concurrent_reviews)
+        self._review_slots = threading.Semaphore(max_reviews)
+        self._max_concurrent_reviews = max_reviews
+        self._active_review_count = 0
+        self._review_threads: set[threading.Thread] = set()
+        self._task_lock = threading.Lock()
+        self._qb_lock = threading.Lock()
 
     @property
     def status(self) -> ServerStatus:
         return self._status
+
+    def _qb_call(self, method_name: str, *args, **kwargs):
+        """串行化访问共享 QBClient，避免多线程并发调用 SDK。"""
+        with self._qb_lock:
+            assert self._qb is not None
+            method = getattr(self._qb, method_name)
+            return method(*args, **kwargs)
+
+    def _active_reviews(self) -> int:
+        with self._task_lock:
+            return self._active_review_count
+
+    def _wait_for_review_slot(self, blocking: bool) -> bool:
+        """获取审核槽位；blocking=True 时可被 stop_event 打断。"""
+        if not blocking:
+            return self._review_slots.acquire(blocking=False)
+
+        while not self._stop_event.is_set():
+            if self._review_slots.acquire(timeout=0.5):
+                return True
+        return False
+
+    def _cleanup_finished_threads(self) -> None:
+        """清理已结束的审核线程引用。"""
+        with self._task_lock:
+            self._review_threads = {t for t in self._review_threads if t.is_alive()}
+
+    def _submit_review(self, question_id: str, description: str, *, blocking: bool) -> bool:
+        """提交审核任务，受最大并发数限制。"""
+        self._cleanup_finished_threads()
+
+        with self._task_lock:
+            if question_id in self._inflight_ids:
+                logger.info("题目已在审核队列中，跳过重复提交: %s (%s)", description, question_id)
+                print("该题目已在审核队列中")
+                return False
+
+        acquired = self._wait_for_review_slot(blocking)
+        if not acquired:
+            logger.warning("审核队列已满，跳过: %s", description)
+            print(f"当前审核任务已达上限 ({self._max_concurrent_reviews})，请稍后再试")
+            return False
+
+        with self._task_lock:
+            if question_id in self._inflight_ids:
+                self._review_slots.release()
+                logger.info("题目已在审核队列中，跳过重复提交: %s (%s)", description, question_id)
+                print("该题目已在审核队列中")
+                return False
+            self._inflight_ids.add(question_id)
+            self._active_review_count += 1
+            self._status = ServerStatus.REVIEWING
+
+        thread = threading.Thread(
+            target=self._review_question_task,
+            args=(question_id, description),
+            daemon=True,
+            name=f"review-{question_id[:8]}",
+        )
+        with self._task_lock:
+            self._review_threads.add(thread)
+        thread.start()
+        logger.info(
+            "已提交审核任务: %s (%s)，当前并发 %d/%d",
+            description,
+            question_id,
+            self._active_reviews(),
+            self._max_concurrent_reviews,
+        )
+        return True
+
+    def _finish_review_task(self, question_id: str, succeeded: bool) -> None:
+        """清理审核任务状态并释放槽位。"""
+        with self._task_lock:
+            self._inflight_ids.discard(question_id)
+            if succeeded:
+                self._reviewed_ids.add(question_id)
+            self._active_review_count = max(0, self._active_review_count - 1)
+            self._review_threads.discard(threading.current_thread())
+            if self._active_review_count == 0 and self._status == ServerStatus.REVIEWING:
+                self._status = ServerStatus.IDLE
+        self._review_slots.release()
+
+    def _wait_for_all_reviews(self) -> None:
+        """等待所有已提交审核任务完成。"""
+        while True:
+            with self._task_lock:
+                threads = list(self._review_threads)
+            if not threads:
+                return
+            for thread in threads:
+                thread.join(timeout=0.2)
+            self._cleanup_finished_threads()
 
     # ------------------------------------------------------------------
     # 连接 / 断开
@@ -83,10 +184,10 @@ class ReviewServer:
         logger.info("正在连接题库服务器: %s", cfg.url)
 
         self._qb = QBClient(cfg.url)
-        self._qb.login(cfg.username, cfg.password)
+        self._qb_call("login", cfg.username, cfg.password)
 
         # 获取 bot 用户信息
-        profile = self._qb.me()
+        profile = self._qb_call("me")
         self._bot_username = profile.username
         self._bot_display_name = profile.display_name
         self._startup_time = datetime.now(timezone.utc)
@@ -97,16 +198,17 @@ class ReviewServer:
 
     def _disconnect(self) -> None:
         """断开题库连接。"""
-        if self._qb is not None:
-            try:
-                self._qb.logout()
-            except QBError:
-                pass
-            try:
-                self._qb.close()
-            except Exception:
-                pass
-            self._qb = None
+        with self._qb_lock:
+            if self._qb is not None:
+                try:
+                    self._qb.logout()
+                except QBError:
+                    pass
+                try:
+                    self._qb.close()
+                except Exception:
+                    pass
+                self._qb = None
         self._status = ServerStatus.STOPPED
 
     # ------------------------------------------------------------------
@@ -116,7 +218,8 @@ class ReviewServer:
     def _download_and_extract(self, question_id: str, tmp_dir: Path) -> Path:
         """下载题目 bundle 并解压，返回 tex 文件路径。"""
         assert self._qb is not None
-        bundle_path = self._qb.download_question_bundle(
+        bundle_path = self._qb_call(
+            "download_question_bundle",
             [question_id], save_to=str(tmp_dir / "bundle.zip"),
         )
 
@@ -139,23 +242,12 @@ class ReviewServer:
 
         raise ValueError(f"manifest 中未找到题目: {question_id}")
 
-    def _review_question(self, question_id: str, description: str, *, blocking: bool = True) -> bool:
-        """审核单个题目，成功返回 True。
-
-        Args:
-            blocking: 为 True 时阻塞等待锁；为 False 时获取不到锁立即返回。
-        """
-        assert self._qb is not None
-        acquired = self._review_lock.acquire(blocking=blocking)
-        if not acquired:
-            logger.warning("当前有审核任务正在执行，跳过: %s", description)
-            print(f"当前有审核任务正在执行，请稍后再试")
-            return False
-        prev_status = self._status
-        self._status = ServerStatus.REVIEWING
+    def _review_question_task(self, question_id: str, description: str) -> None:
+        """审核单个题目的线程任务。"""
         logger.info("开始审核题目: %s (%s)", description, question_id)
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="ai_reviewer_"))
+        succeeded = False
         try:
             tex_path = self._download_and_extract(question_id, tmp_dir)
 
@@ -170,21 +262,18 @@ class ReviewServer:
             # 读取 eval 结果用于回写
             eval_result = sm.eval_result
             if eval_result is not None:
-                self._write_back(question_id, eval_result)
+                self._write_back(question_id, eval_result, sm.report_markdown)
 
-            self._reviewed_ids.add(question_id)
             logger.info("题目审核完成: %s", description)
-            return True
+            succeeded = True
 
         except Exception:
             logger.exception("题目审核失败: %s (%s)", description, question_id)
-            return False
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            self._status = prev_status
-            self._review_lock.release()
+            self._finish_review_task(question_id, succeeded)
 
-    def _write_back(self, question_id: str, eval_result) -> None:
+    def _write_back(self, question_id: str, eval_result, markdown_notes: str = "") -> None:
         """将审核结果回写到题库。"""
         assert self._qb is not None
         from src.model import EvalResult
@@ -193,42 +282,81 @@ class ReviewServer:
             return
 
         difficulty_tag = self._bot_username
-        difficulty_value = {
-            difficulty_tag: {
-                "score": eval_result.overall_difficulty,
-                "notes": eval_result.summary,
-            },
-        }
+        notes = markdown_notes if markdown_notes else eval_result.summary
+        exists = False
 
         try:
-            # 获取当前题目详情，保留原有元数据
-            detail = self._qb.get_question(question_id)
+            # v0.1.0 SDK: create 与 update 语义分离，按是否已存在做 upsert。
+            detail = self._qb_call("get_question", question_id)
+            exists = difficulty_tag in detail.difficulty
 
-            # 合并 difficulty：保留原有条目，仅添加/覆盖 bot 的条目
-            existing_difficulty = {
-                tag: {"score": val.score, "notes": val.notes}
-                for tag, val in detail.difficulty.items()
-            }
-            existing_difficulty[difficulty_tag] = {
-                "score": eval_result.overall_difficulty,
-                "notes": eval_result.summary,
-            }
+            if exists:
+                self._qb_call(
+                    "update_question_difficulty",
+                    question_id,
+                    difficulty_tag,
+                    eval_result.overall_difficulty,
+                    notes=notes,
+                )
+            else:
+                self._qb_call(
+                    "create_question_difficulty",
+                    question_id,
+                    difficulty_tag,
+                    eval_result.overall_difficulty,
+                    notes=notes,
+                )
 
-            # 追加 bot 显示名到 reviewers（去重）
-            reviewers = list(detail.reviewers)
-            if self._bot_display_name not in reviewers:
-                reviewers.append(self._bot_display_name)
+            # 并发情况下存在竞态：create 可能因已存在失败，update 可能因不存在失败。
+            # 若出现 404/409，则反向再试一次。
+        except QBError as e:
+            if e.status_code in (404, 409):
+                try:
+                    if exists:
+                        self._qb_call(
+                            "create_question_difficulty",
+                            question_id,
+                            difficulty_tag,
+                            eval_result.overall_difficulty,
+                            notes=notes,
+                        )
+                    else:
+                        self._qb_call(
+                            "update_question_difficulty",
+                            question_id,
+                            difficulty_tag,
+                            eval_result.overall_difficulty,
+                            notes=notes,
+                        )
+                except QBError as e2:
+                    logger.error("回写审核结果失败: %s", e2.message)
+                    return
+            else:
+                logger.error("回写审核结果失败: %s", e.message)
+                return
 
-            self._qb.update_question(
-                question_id,
-                difficulty=existing_difficulty,
-                reviewers=reviewers,
-            )
-            logger.info("已回写审核结果: difficulty[%s]=%d, reviewer=%s",
-                         difficulty_tag, eval_result.overall_difficulty,
-                         self._bot_display_name)
+        try:
+            self._qb_call("update_question_status", question_id, "reviewed")
+            logger.info("已回写审核结果: difficulty[%s]=%d, notes_len=%d",
+                        difficulty_tag, eval_result.overall_difficulty,
+                        len(notes))
         except QBError as e:
             logger.error("回写审核结果失败: %s", e.message)
+
+        # 将 bot 显示名称添加到审题人列表（保留已有审题人）
+        if self._bot_display_name:
+            try:
+                current_reviewers = list(detail.reviewers)
+                if self._bot_display_name not in current_reviewers:
+                    current_reviewers.append(self._bot_display_name)
+                    self._qb_call(
+                        "update_question_reviewer_names",
+                        question_id,
+                        current_reviewers,
+                    )
+                    logger.info("已将 %s 添加到审题人列表", self._bot_display_name)
+            except QBError as e:
+                logger.error("添加审题人失败: %s", e.message)
 
     # ------------------------------------------------------------------
     # 搜索题目
@@ -237,7 +365,7 @@ class ReviewServer:
     def _search_questions(self, keyword: str) -> list[dict]:
         """搜索题目，返回简要信息列表。"""
         assert self._qb is not None
-        result = self._qb.list_questions(q=keyword, limit=20)
+        result = self._qb_call("list_questions", q=keyword, limit=20)
         items = []
         for q in result.items:
             items.append({
@@ -258,19 +386,26 @@ class ReviewServer:
     # ------------------------------------------------------------------
 
     def _poll_new_questions(self) -> list:
-        """查询需要审核的新题目（status=none 且 updated_at > 启动时间）。"""
+        """查询需要审核的新题目（status=none 且 updated_at 超过设定时间线）。"""
         assert self._qb is not None
         assert self._startup_time is not None
 
-        updated_after = self._startup_time.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        result = self._qb.list_questions(
+        auto_updated_after = get_config().qb.auto_updated_after
+        baseline = auto_updated_after or self._startup_time
+        updated_after = baseline.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        with self._task_lock:
+            inflight_ids = set(self._inflight_ids)
+            reviewed_ids = set(self._reviewed_ids)
+        result = self._qb_call(
+            "list_questions",
             updated_after=updated_after,
             limit=100,
         )
         new_questions = [
             q for q in result.items
             if q.status == "none"
-            and q.question_id not in self._reviewed_ids
+            and q.question_id not in reviewed_ids
+            and q.question_id not in inflight_ids
         ]
         return new_questions
 
@@ -289,10 +424,13 @@ class ReviewServer:
                     for q in new_qs:
                         if self._stop_event.is_set():
                             break
-                        self._review_question(q.question_id, q.description, blocking=True)
+                        self._submit_review(q.question_id, q.description, blocking=True)
                 else:
                     logger.debug("未发现新题目")
-                self._status = ServerStatus.IDLE
+                self._status = (
+                    ServerStatus.REVIEWING if self._active_reviews() > 0
+                    else ServerStatus.IDLE
+                )
             except QBError as e:
                 logger.error("自动轮询出错: %s", e.message)
                 self._status = ServerStatus.IDLE
@@ -342,6 +480,7 @@ class ReviewServer:
             "  review <序号|UUID>    审核指定题目（序号为最近搜索结果中的编号）\n"
             "  auto on               开启自动轮询模式\n"
             "  auto off              关闭自动轮询模式\n"
+            "  启动参数 --auto-updated-after 可覆盖 auto 的检查起点\n"
             "  status                查看当前服务状态\n"
             "  help                  显示此帮助\n"
             "  quit / exit           退出服务\n"
@@ -373,8 +512,13 @@ class ReviewServer:
                 self._print_help()
 
             elif cmd == "status":
+                auto_updated_after = get_config().qb.auto_updated_after
+                baseline = auto_updated_after or self._startup_time
                 print(f"服务状态: {self._status.name}")
                 print(f"自动模式: {'开启' if self._auto_mode else '关闭'}")
+                print(f"审核并发: {self._active_reviews()}/{self._max_concurrent_reviews}")
+                if baseline is not None:
+                    print(f"auto 检查起点: {baseline.isoformat()}")
                 print(f"已审核题目数: {len(self._reviewed_ids)}")
 
             elif cmd == "search":
@@ -403,7 +547,7 @@ class ReviewServer:
                     idx = int(arg) - 1
                     if 0 <= idx < len(last_search):
                         q = last_search[idx]
-                        self._review_question(q["question_id"], q["description"], blocking=False)
+                        self._submit_review(q["question_id"], q["description"], blocking=False)
                     else:
                         print(f"序号超出范围 (1-{len(last_search)})")
                     continue
@@ -411,8 +555,8 @@ class ReviewServer:
                     pass
                 # 按 UUID 处理
                 try:
-                    detail = self._qb.get_question(arg)
-                    self._review_question(detail.question_id, detail.description, blocking=False)
+                    detail = self._qb_call("get_question", arg)
+                    self._submit_review(detail.question_id, detail.description, blocking=False)
                 except QBError as e:
                     print(f"获取题目失败: {e.message}")
 
@@ -453,5 +597,6 @@ class ReviewServer:
         finally:
             if self._auto_mode:
                 self._stop_auto()
+            self._wait_for_all_reviews()
             self._disconnect()
             logger.info("服务已停止")

@@ -20,7 +20,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cphos-qdb", git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git" },
+    { name = "cphos-qdb", git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git?rev=v0.2.1" },
     { name = "openai", specifier = ">=1.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -71,8 +71,8 @@ wheels = [
 
 [[package]]
 name = "cphos-qdb"
-version = "0.1.0"
-source = { git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git#9f01ef434231a6f6e6fd339936b0a816c16ab738" }
+version = "0.2.1"
+source = { git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git?rev=v0.2.1#a8b21559a462134891e38342180865103725cda9" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },

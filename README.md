@@ -9,7 +9,7 @@ CPHOS 物理竞赛题目 AI 审核工具。自动解析 LaTeX 题目文件，对
 - 三维难度评分 + 综合总结
 - Markdown + JSON 双格式报告
 - 多文件并发审核
-- 远程题库服务器对接：手动搜索审题 + 自动轮询新题
+- 远程题库服务器对接：手动搜索审题 + 自动轮询新题 + server 侧有界并发审核
 
 ## 快速开始
 
@@ -57,6 +57,7 @@ ai-reviewer local problem.tex -o reports/
 ```bash
 ai-reviewer server
 ai-reviewer server --auto-on # 连接成功后立即开启自动轮询模式
+ai-reviewer server --auto-on --auto-updated-after 2026-04-11T08:00:00+08:00 # 指定 auto 模式检查起点，默认为服务启动时间
 ```
 
 登录成功后可使用以下命令：
@@ -72,10 +73,12 @@ ai-reviewer server --auto-on # 连接成功后立即开启自动轮询模式
 | `quit` / `exit` | 退出 |
 
 **自动模式**：后台定时轮询题库，自动审核 `status=none` 且在服务启动后有更新的新题目。已审核过的老题目不会重复处理。
+手动 `review` 与自动轮询共用同一并发上限，由 `QB_MAX_CONCURRENT_REVIEWS` 控制。
+可选启动参数 `--auto-updated-after` 可手动指定 auto 的检查起点；未指定时默认使用服务启动时间。
 
 审核完成后会自动：
 1. 生成本地报告（.md + .json）
-2. 回写题库：在 `difficulty` 中添加以 bot 用户名为标签的难度评分（`notes` 写入摘要），将 bot 显示名称追加到审题人列表
+2. 回写题库：按难度标签存在性执行 upsert（存在则 `update_question_difficulty`，不存在则 `create_question_difficulty`），并调用 `update_question_status(..., "reviewed")`；`notes` 上传内容与本次生成的 Markdown 报告全文一致
 
 ## 配置
 
@@ -103,6 +106,7 @@ ai-reviewer server --auto-on # 连接成功后立即开启自动轮询模式
 | `QB_USERNAME` | Bot 账号用户名 | — |
 | `QB_PASSWORD` | Bot 账号密码 | — |
 | `QB_POLL_INTERVAL` | 自动轮询间隔（秒） | `600` |
+| `QB_MAX_CONCURRENT_REVIEWS` | server 模式最多同时维持的审核任务数 | `1` |
 
 ## 输出报告
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timezone
+
 from src.app.cli import build_parser, _generate_task_id
 
 
@@ -39,6 +41,25 @@ class TestBuildParser:
         args = parser.parse_args(["server", "-o", "reports"])
         assert args.mode == "server"
         assert args.output_dir == "reports"
+
+    def test_server_auto_updated_after(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "server",
+            "--auto-updated-after",
+            "2026-04-11T08:00:00+08:00",
+        ])
+        assert args.mode == "server"
+        assert args.auto_updated_after.isoformat() == "2026-04-11T00:00:00+00:00"
+
+    def test_server_auto_updated_after_z_suffix(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "server",
+            "--auto-updated-after",
+            "2026-04-11T00:00:00Z",
+        ])
+        assert args.auto_updated_after.tzinfo == timezone.utc
 
 
 class TestGenerateTaskId:

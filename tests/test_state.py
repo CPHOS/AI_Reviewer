@@ -106,6 +106,7 @@ class TestStateMachineRun:
 
         md_content = (tmp_path / "output" / "test.md").read_text(encoding="utf-8")
         assert md_content == "# Report"
+        assert sm.report_markdown == "# Report"
 
     @patch("src.client.openrouter.OpenRouterClient")
     @patch("src.formatter.output.format_output")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass
@@ -33,6 +34,10 @@ class QBConfig:
     password: str = ""
     poll_interval: int = 600
     """自动模式轮询间隔（秒），默认 600。"""
+    max_concurrent_reviews: int = 1
+    """server 模式最多同时维持的审核任务数。"""
+    auto_updated_after: datetime | None = None
+    """auto 模式仅检查该时间之后更新的题目；为空时默认使用服务启动时间。"""
 
 
 @dataclass

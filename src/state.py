@@ -42,6 +42,7 @@ class StateMachine:
         self._state: State = State.INIT
         self._start_time: float = 0.0
         self._eval_result = None
+        self._report_markdown: str = ""
 
     @property
     def state(self) -> State:
@@ -51,6 +52,11 @@ class StateMachine:
     def eval_result(self):
         """最近一次审核的汇总评估结果。"""
         return self._eval_result
+
+    @property
+    def report_markdown(self) -> str:
+        """最近一次审核生成的 Markdown 报告内容。"""
+        return self._report_markdown
 
     def _transition(self, to: State) -> None:
         """执行状态转移并记录日志。"""
@@ -72,6 +78,8 @@ class StateMachine:
 
         cfg = get_config()
         self._start_time = time.monotonic()
+        self._eval_result = None
+        self._report_markdown = ""
         file_stem = task_id or Path(tex_path).stem
         logger.info("[%s] 开始审核: %s", file_stem, tex_path)
 
@@ -106,6 +114,7 @@ class StateMachine:
                 elapsed_seconds=round(elapsed, 2),
             )
             md, js = format_output(problem, review_result, eval_result, meta)
+            self._report_markdown = md
 
             # 写入文件
             out_dir = Path(cfg.output_dir)
