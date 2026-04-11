@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+wheels/
+.venv/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Environment & output
+.env
+.env.*
+!.env.example
+output/
+
+# Tests & docs
+tests/
+DEVELOPMENT.md
+README.md
+LICENSE
