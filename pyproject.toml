@@ -26,4 +26,4 @@ build-backend = "hatchling.build"
 packages = ["src"]
 
 [tool.uv.sources]
-cphos-qdb = { git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git", rev = "v0.2.1" }
+cphos-qdb = { git = "https://github.com/CPHOS/cphos-qdb-sdk-python.git", rev = "v0.2.2" }
