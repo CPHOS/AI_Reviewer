@@ -1,6 +1,6 @@
 services:
   ai-reviewer:
-    image: ghcr.io/cphos/ai-reviewer:latest
+    image: ghcr.io/cphos/ai_reviewer:latest
     container_name: ai-reviewer
     restart: unless-stopped
     env_file: .env
