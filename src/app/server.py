@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import signal
+import sys
 import tempfile
 import threading
 import time
@@ -581,11 +583,23 @@ class ReviewServer:
         Args:
             auto_on: 为 True 时连接成功后立即开启自动轮询。
         """
+        def _handle_signal(signum, frame):
+            logger.info("收到信号 %s，正在停止服务…", signum)
+            self._stop_event.set()
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
         try:
             self._connect()
             if auto_on:
                 self._start_auto()
-            self._cmd_loop()
+            if sys.stdin.isatty():
+                self._cmd_loop()
+            else:
+                # 非交互模式（如 Docker）：阻塞等待停止信号
+                logger.info("非交互模式，按 Ctrl+C 或发送 SIGTERM 停止服务")
+                self._stop_event.wait()
         except KeyboardInterrupt:
             print("\n收到中断信号")
         except QBError as e:
