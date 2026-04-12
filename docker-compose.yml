@@ -1,0 +1,12 @@
+services:
+  ai-reviewer:
+    image: ghcr.io/cphos/ai-reviewer:latest
+    container_name: ai-reviewer
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./output:/app/output
+    # 默认以 server --auto-on 模式运行，可按需覆盖
+    # command: ["server", "--auto-on"]
+    # 如果需要指定 auto 模式检查起点：
+    # command: ["server", "--auto-on", "--auto-updated-after", "2026-04-11T08:00:00+08:00"]
