@@ -30,8 +30,7 @@ class QBConfig:
     """题库服务器配置（server 模式）。"""
 
     url: str = ""
-    username: str = ""
-    password: str = ""
+    access_token: str = ""
     poll_interval: int = 600
     """自动模式轮询间隔（秒），默认 600。"""
     max_concurrent_reviews: int = 1

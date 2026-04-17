@@ -21,8 +21,7 @@ def setup_server_config(tmp_path):
         llm=LLMConfig(model="test-model"),
         qb=QBConfig(
             url="http://localhost:8080",
-            username="bot",
-            password="pass",
+            access_token="test-token",
             poll_interval=1,
             max_concurrent_reviews=2,
         ),
@@ -68,8 +67,7 @@ class TestReviewConcurrency:
             llm=LLMConfig(model="test-model"),
             qb=QBConfig(
                 url="http://localhost:8080",
-                username="bot",
-                password="pass",
+                access_token="test-token",
                 poll_interval=1,
                 max_concurrent_reviews=1,
             ),
@@ -122,8 +120,7 @@ class TestAutoPollingFilter:
             llm=LLMConfig(model="test-model"),
             qb=QBConfig(
                 url="http://localhost:8080",
-                username="bot",
-                password="pass",
+                access_token="test-token",
                 poll_interval=1,
                 max_concurrent_reviews=2,
                 auto_updated_after=datetime(2026, 4, 10, 16, 0, 0, tzinfo=timezone.utc),

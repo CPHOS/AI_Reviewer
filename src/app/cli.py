@@ -148,8 +148,7 @@ def _load_qb_config() -> QBConfig:
     """从环境变量构建 QBConfig。"""
     return QBConfig(
         url=os.getenv("QB_URL", ""),
-        username=os.getenv("QB_USERNAME", ""),
-        password=os.getenv("QB_PASSWORD", ""),
+        access_token=os.getenv("QB_ACCESS_TOKEN", ""),
         poll_interval=int(os.getenv("QB_POLL_INTERVAL", "600")),
         max_concurrent_reviews=max(
             1, int(os.getenv("QB_MAX_CONCURRENT_REVIEWS", "1"))

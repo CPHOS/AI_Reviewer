@@ -177,16 +177,15 @@ class ReviewServer:
     # ------------------------------------------------------------------
 
     def _connect(self) -> None:
-        """登录题库服务器。"""
+        """连接题库服务器。"""
         cfg = get_config().qb
-        if not cfg.url or not cfg.username or not cfg.password:
-            raise ValueError("题库服务器配置不完整，请检查 .env 中的 QB_URL / QB_USERNAME / QB_PASSWORD")
+        if not cfg.url or not cfg.access_token:
+            raise ValueError("题库服务器配置不完整，请检查 .env 中的 QB_URL / QB_ACCESS_TOKEN")
 
         self._status = ServerStatus.CONNECTING
         logger.info("正在连接题库服务器: %s", cfg.url)
 
-        self._qb = QBClient(cfg.url)
-        self._qb_call("login", cfg.username, cfg.password)
+        self._qb = QBClient(cfg.url, access_token=cfg.access_token)
 
         # 获取 bot 用户信息
         profile = self._qb_call("me")
@@ -194,7 +193,7 @@ class ReviewServer:
         self._bot_display_name = profile.display_name
         self._startup_time = datetime.now(timezone.utc)
 
-        logger.info("已登录: %s (%s), 角色: %s",
+        logger.info("已连接: %s (%s), 角色: %s",
                      profile.display_name, profile.username, profile.role)
         self._status = ServerStatus.IDLE
 
@@ -202,10 +201,6 @@ class ReviewServer:
         """断开题库连接。"""
         with self._qb_lock:
             if self._qb is not None:
-                try:
-                    self._qb.logout()
-                except QBError:
-                    pass
                 try:
                     self._qb.close()
                 except Exception:
